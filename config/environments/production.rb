@@ -96,7 +96,7 @@ Rails.application.configure do
   config.action_mailer.smtp_settings = {
     :port           => ENV['SPARKPOST_SMTP_PORT'],
     :address        => ENV["SPARKPOST_SMTP_HOST"],
-    :user_name      => ENV["SPARKPOST_SMTP_USERNAME"]],
+    :user_name      => ENV["SPARKPOST_SMTP_USERNAME"],
     :password       => ENV["SPARKPOST_SMTP_PASSWORD"],
     :domain         => ENV['SMTP_DOMAIN'] || config.x.local_domain,
     :authentication => :plain,
