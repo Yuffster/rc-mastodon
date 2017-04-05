@@ -5,11 +5,11 @@
   = Rails.configuration.x.local_domain
 
 - content_for :header_tags do
-  %meta{ property: 'og:site_name', content: 'Mastodon' }/
+  %meta{ property: 'og:site_name', content: 'RC Mastodon' }/
   %meta{ property: 'og:type', content: 'website' }/
   %meta{ property: 'og:title', content: Rails.configuration.x.local_domain }/
-  %meta{ property: 'og:description', content: @description.blank? ? "Mastodon is a free, open-source social network server. A decentralized alternative to commercial platforms, it avoids the risks of a single company monopolizing your communication. Anyone can run Mastodon and participate in the social network seamlessly" : strip_tags(@description) }/
-  %meta{ property: 'og:image', content: asset_url('mastodon_small.jpg') }/
+  %meta{ property: 'og:description', content: @description.blank? ? "Recurse Center instance of Mastodon." : strip_tags(@description) }/
+  %meta{ property: 'og:image', content: asset_url('octopus.svg') }/
   %meta{ property: 'og:image:width', content: '400' }/
   %meta{ property: 'og:image:height', content: '400' }/
   %meta{ property: 'twitter:card', content: 'summary' }/
@@ -17,12 +17,12 @@
 .wrapper
   %h1
     = image_tag 'logo.png'
-    Mastodon
+    RC Mastodon
 
   %p= t('about.about_mastodon').html_safe
 
   .screenshot-with-signup
-    .mascot= image_tag 'fluffy-elephant-friend.png'
+    .mascot= image_tag 'octopus.svg'
 
     - if @open_registrations
       = simple_form_for(@user, url: user_registration_path) do |f|
@@ -38,18 +38,6 @@
 
         .info
           = link_to t('auth.login'), new_user_session_path, class: 'webapp-btn'
-          ·
-          = link_to t('about.about_this'), about_more_path
-    - else
-      .closed-registrations-message
-        - if @closed_registrations_message.blank?
-          %p= t('about.closed_registrations')
-        - else
-          = @closed_registrations_message.html_safe
-        .info
-          = link_to t('auth.login'), new_user_session_path, class: 'webapp-btn'
-          ·
-          = link_to t('about.other_instances'), 'https://github.com/tootsuite/mastodon/blob/master/docs/Using-Mastodon/List-of-Mastodon-instances.md'
           ·
           = link_to t('about.about_this'), about_more_path
 
@@ -95,6 +83,5 @@
       ·
       = link_to t('about.apps'), 'https://github.com/tootsuite/mastodon/blob/master/docs/Using-Mastodon/Apps.md'
       ·
-      = link_to t('about.source_code'), 'https://github.com/tootsuite/mastodon'
+      = link_to t('about.source_code'), 'https://github.com/Yuffster/rc-mastodon'
       ·
-      = link_to t('about.other_instances'), 'https://github.com/tootsuite/mastodon/blob/master/docs/Using-Mastodon/List-of-Mastodon-instances.md'
