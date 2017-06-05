@@ -34,12 +34,7 @@ class FeedManager
       trim(timeline_type, account.id)
     end
 
-    broadcast(account.id, event: 'update', payload: inline_render(account, 'api/v1/statuses/show', status))
-  end
-
-  def broadcast(timeline_id, options = {})
-    options[:queued_at] = (Time.now.to_f * 1000.0).to_i
-    redis.publish("timeline:#{timeline_id}", Oj.dump(options))
+    PushUpdateWorker.perform_async(account.id, status.id)
   end
 
   def trim(type, account_id)
@@ -71,7 +66,7 @@ class FeedManager
     timeline_key = key(:home, into_account.id)
     oldest_home_score = redis.zrange(timeline_key, 0, 0, with_scores: true)&.first&.last&.to_i || 0
 
-    from_account.statuses.select('id').where('id > ?', oldest_home_score).find_in_batches do |statuses|
+    from_account.statuses.select('id').where('id > ?', oldest_home_score).reorder(nil).find_in_batches do |statuses|
       redis.pipelined do
         statuses.each do |status|
           redis.zrem(timeline_key, status.id)
@@ -81,8 +76,12 @@ class FeedManager
     end
   end
 
-  def inline_render(target_account, template, object)
-    Rabl::Renderer.new(template, object, view_path: 'app/views', format: :json, scope: InlineRablScope.new(target_account)).render
+  def clear_from_timeline(account, target_account)
+    timeline_key = key(:home, account.id)
+    timeline_status_ids = redis.zrange(timeline_key, 0, -1)
+    target_status_ids = Status.where(id: timeline_status_ids, account: target_account).ids
+
+    redis.zrem(timeline_key, target_status_ids) if target_status_ids.present?
   end
 
   private
@@ -99,7 +98,7 @@ class FeedManager
 
     return true if Mute.where(account_id: receiver_id, target_account_id: check_for_mutes).any?
 
-    check_for_blocks = status.mentions.map(&:account_id)
+    check_for_blocks = status.mentions.pluck(:account_id)
     check_for_blocks.concat([status.reblog.account_id]) if status.reblog?
 
     return true if Block.where(account_id: receiver_id, target_account_id: check_for_blocks).any?
@@ -110,7 +109,9 @@ class FeedManager
       should_filter &&= !(status.account_id == status.in_reply_to_account_id)                                            # and it's not a self-reply
       return should_filter
     elsif status.reblog?                                                                                                 # Filter out a reblog
-      return Block.where(account_id: status.reblog.account_id, target_account_id: receiver_id).exists?                   # or if the author of the reblogged status is blocking me
+      should_filter   = Block.where(account_id: status.reblog.account_id, target_account_id: receiver_id).exists?        # or if the author of the reblogged status is blocking me
+      should_filter ||= AccountDomainBlock.where(account_id: receiver_id, domain: status.reblog.account.domain).exists?  # or the author's domain is blocked
+      return should_filter
     end
 
     false

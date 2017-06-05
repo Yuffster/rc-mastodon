@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'sidekiq/web'
+require 'sidekiq-scheduler/web'
 
 Rails.application.routes.draw do
   mount LetterOpenerWeb::Engine, at: 'letter_opener' if Rails.env.development?
@@ -11,11 +12,11 @@ Rails.application.routes.draw do
   end
 
   use_doorkeeper do
-    controllers authorizations: 'oauth/authorizations'
+    controllers authorizations: 'oauth/authorizations', authorized_applications: 'oauth/authorized_applications'
   end
 
-  get '.well-known/host-meta', to: 'xrd#host_meta', as: :host_meta
-  get '.well-known/webfinger', to: 'xrd#webfinger', as: :webfinger
+  get '.well-known/host-meta', to: 'well_known/host_meta#show', as: :host_meta, defaults: { format: 'xml' }
+  get '.well-known/webfinger', to: 'well_known/webfinger#show', as: :webfinger
 
   devise_for :users, path: 'auth', controllers: {
     sessions:           'auth/sessions',
@@ -36,13 +37,10 @@ Rails.application.routes.draw do
     get :remote_follow,  to: 'remote_follow#new'
     post :remote_follow, to: 'remote_follow#create'
 
-    member do
-      get :followers
-      get :following
-
-      post :follow
-      post :unfollow
-    end
+    resources :followers, only: [:index], controller: :follower_accounts
+    resources :following, only: [:index], controller: :following_accounts
+    resource :follow, only: [:create], controller: :account_follow
+    resource :unfollow, only: [:create], controller: :account_unfollow
   end
 
   get '/@:username', to: 'accounts#show', as: :short_account
@@ -53,53 +51,51 @@ Rails.application.routes.draw do
     resource :preferences, only: [:show, :update]
     resource :import, only: [:show, :create]
 
-    resource :export, only: [:show] do
-      collection do
-        get :follows, to: 'exports#download_following_list'
-        get :blocks, to: 'exports#download_blocking_list'
-      end
+    resource :export, only: [:show]
+    namespace :exports, constraints: { format: :csv } do
+      resources :follows, only: :index, controller: :following_accounts
+      resources :blocks, only: :index, controller: :blocked_accounts
+      resources :mutes, only: :index, controller: :muted_accounts
     end
 
-    resource :two_factor_auth, only: [:show] do
-      member do
-        post :enable
-        post :disable
-      end
+    resource :two_factor_authentication, only: [:show, :create, :destroy]
+    namespace :two_factor_authentication do
+      resources :recovery_codes, only: [:create]
+      resource :confirmation, only: [:new, :create]
     end
+
+    resource :follower_domains, only: [:show, :update]
   end
 
   resources :media, only: [:show]
   resources :tags,  only: [:show]
 
   # Remote follow
-  get  :authorize_follow, to: 'authorize_follow#new'
-  post :authorize_follow, to: 'authorize_follow#create'
+  resource :authorize_follow, only: [:show, :create]
 
   namespace :admin do
     resources :pubsubhubbub, only: [:index]
-    resources :domain_blocks, only: [:index, :new, :create]
-    resources :settings, only: [:index, :update]
+    resources :domain_blocks, only: [:index, :new, :create, :show, :destroy]
+    resource :settings, only: [:edit, :update]
+    resources :instances, only: [:index]
 
-    resources :reports, only: [:index, :show] do
-      member do
-        post :resolve
-        post :silence
-        post :suspend
-        post :remove
-      end
+    resources :reports, only: [:index, :show, :update] do
+      resources :reported_statuses, only: [:update, :destroy]
     end
 
     resources :accounts, only: [:index, :show] do
-      member do
-        post :silence
-        post :unsilence
-        post :suspend
-        post :unsuspend
-      end
+      resource :reset, only: [:create]
+      resource :silence, only: [:create, :destroy]
+      resource :suspension, only: [:create, :destroy]
+      resource :confirmation, only: [:create]
+    end
+
+    resources :users, only: [] do
+      resource :two_factor_authentication, only: [:destroy]
     end
   end
 
-  get '/admin', to: redirect('/admin/settings', status: 302)
+  get '/admin', to: redirect('/admin/settings/edit', status: 302)
 
   namespace :api do
     # PubSubHubbub outgoing subscriptions
@@ -115,6 +111,13 @@ Rails.application.routes.draw do
     # OEmbed
     get '/oembed', to: 'oembed#show', as: :oembed
 
+    # ActivityPub
+    namespace :activitypub do
+      get '/users/:id/outbox', to: 'outbox#show', as: :outbox
+      get '/statuses/:id', to: 'activities#show_status', as: :status
+      resources :notes, only: [:show]
+    end
+
     # JSON / REST API
     namespace :v1 do
       resources :statuses, only: [:create, :show, :destroy] do
@@ -128,12 +131,16 @@ Rails.application.routes.draw do
           post :unreblog
           post :favourite
           post :unfavourite
+          post :mute
+          post :unmute
         end
       end
 
-      get '/timelines/home',     to: 'timelines#home', as: :home_timeline
-      get '/timelines/public',   to: 'timelines#public', as: :public_timeline
-      get '/timelines/tag/:id',  to: 'timelines#tag', as: :hashtag_timeline
+      namespace :timelines do
+        resource :home, only: :show, controller: :home
+        resource :public, only: :show, controller: :public
+        resources :tag, only: :show
+      end
 
       get '/search', to: 'search#index', as: :search
 
@@ -145,7 +152,8 @@ Rails.application.routes.draw do
       resources :favourites, only: [:index]
       resources :reports,    only: [:index, :create]
 
-      resource :instance, only: [:show]
+      resource :instance,      only: [:show]
+      resource :domain_blocks, only: [:show, :create, :destroy]
 
       resources :follow_requests, only: [:index] do
         member do
@@ -157,6 +165,7 @@ Rails.application.routes.draw do
       resources :notifications, only: [:index, :show] do
         collection do
           post :clear
+          post :dismiss
         end
       end
 
@@ -164,6 +173,7 @@ Rails.application.routes.draw do
         collection do
           get :relationships
           get :verify_credentials
+          patch :update_credentials
           get :search
         end
 
@@ -189,11 +199,14 @@ Rails.application.routes.draw do
 
   get '/web/(*any)', to: 'home#index', as: :web
 
-  get '/about',      to: 'about#index'
+  get '/about',      to: 'about#show'
   get '/about/more', to: 'about#more'
   get '/terms',      to: 'about#terms'
 
   root 'home#index'
 
-  match '*unmatched_route', via: :all, to: 'application#raise_not_found'
+  match '*unmatched_route',
+    via: :all,
+    to: 'application#raise_not_found',
+    format: false
 end

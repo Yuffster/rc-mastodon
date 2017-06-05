@@ -1,4 +1,13 @@
 # frozen_string_literal: true
+# == Schema Information
+#
+# Table name: tags
+#
+#  id         :integer          not null, primary key
+#  name       :string           default(""), not null
+#  created_at :datetime         not null
+#  updated_at :datetime         not null
+#
 
 class Tag < ApplicationRecord
   has_and_belongs_to_many :statuses
@@ -17,7 +26,7 @@ class Tag < ApplicationRecord
       textsearch = 'to_tsvector(\'simple\', tags.name)'
       query      = 'to_tsquery(\'simple\', \'\'\' \' || ' + terms + ' || \' \'\'\' || \':*\')'
 
-      sql = <<SQL
+      sql = <<-SQL.squish
         SELECT
           tags.*,
           ts_rank_cd(#{textsearch}, #{query}) AS rank
@@ -25,7 +34,7 @@ class Tag < ApplicationRecord
         WHERE #{query} @@ #{textsearch}
         ORDER BY rank DESC
         LIMIT ?
-SQL
+      SQL
 
       Tag.find_by_sql([sql, limit])
     end

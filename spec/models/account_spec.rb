@@ -54,6 +54,30 @@ RSpec.describe Account, type: :model do
     end
   end
 
+  describe 'Local domain user methods' do
+    around do |example|
+      before = Rails.configuration.x.local_domain
+      example.run
+      Rails.configuration.x.local_domain = before
+    end
+
+    describe '#to_webfinger_s' do
+      it 'returns a webfinger string for the account' do
+        Rails.configuration.x.local_domain = 'example.com'
+
+        expect(subject.to_webfinger_s).to eq 'acct:alice@example.com'
+      end
+    end
+
+    describe '#local_username_and_domain' do
+      it 'returns the username and local domain for the account' do
+        Rails.configuration.x.local_domain = 'example.com'
+
+        expect(subject.local_username_and_domain).to eq 'alice@example.com'
+      end
+    end
+  end
+
   describe '#acct' do
     it 'returns username for local users' do
       expect(subject.acct).to eql 'alice'
@@ -94,16 +118,187 @@ RSpec.describe Account, type: :model do
     end
   end
 
-  describe '#ping!' do
-    pending
-  end
-
   describe '#favourited?' do
-    pending
+    let(:original_status) do
+      author = Fabricate(:account, username: 'original')
+      Fabricate(:status, account: author)
+    end
+
+    context 'when the status is a reblog of another status' do
+      let(:original_reblog) do
+        author = Fabricate(:account, username: 'original_reblogger')
+        Fabricate(:status, reblog: original_status, account: author)
+      end
+
+      it 'is is true when this account has favourited it' do
+        Fabricate(:favourite, status: original_reblog, account: subject)
+
+        expect(subject.favourited?(original_status)).to eq true
+      end
+
+      it 'is false when this account has not favourited it' do
+        expect(subject.favourited?(original_status)).to eq false
+      end
+    end
+
+    context 'when the status is an original status' do
+      it 'is is true when this account has favourited it' do
+        Fabricate(:favourite, status: original_status, account: subject)
+
+        expect(subject.favourited?(original_status)).to eq true
+      end
+
+      it 'is false when this account has not favourited it' do
+        expect(subject.favourited?(original_status)).to eq false
+      end
+    end
   end
 
   describe '#reblogged?' do
-    pending
+    let(:original_status) do
+      author = Fabricate(:account, username: 'original')
+      Fabricate(:status, account: author)
+    end
+
+    context 'when the status is a reblog of another status'do
+      let(:original_reblog) do
+        author = Fabricate(:account, username: 'original_reblogger')
+        Fabricate(:status, reblog: original_status, account: author)
+      end
+
+      it 'is true when this account has reblogged it' do
+        Fabricate(:status, reblog: original_reblog, account: subject)
+
+        expect(subject.reblogged?(original_reblog)).to eq true
+      end
+
+      it 'is false when this account has not reblogged it' do
+        expect(subject.reblogged?(original_reblog)).to eq false
+      end
+    end
+
+    context 'when the status is an original status' do
+      it 'is true when this account has reblogged it' do
+        Fabricate(:status, reblog: original_status, account: subject)
+
+        expect(subject.reblogged?(original_status)).to eq true
+      end
+
+      it 'is false when this account has not reblogged it' do
+        expect(subject.reblogged?(original_status)).to eq false
+      end
+    end
+  end
+
+  describe '#excluded_from_timeline_account_ids' do
+    it 'includes account ids of blockings, blocked_bys and mutes' do
+      account = Fabricate(:account)
+      block = Fabricate(:block, account: account)
+      mute = Fabricate(:mute, account: account)
+      block_by = Fabricate(:block, target_account: account)
+
+      results = account.excluded_from_timeline_account_ids
+      expect(results.size).to eq 3
+      expect(results).to include(block.target_account.id)
+      expect(results).to include(mute.target_account.id)
+      expect(results).to include(block_by.account.id)
+    end
+  end
+
+  describe '.search_for' do
+    before do
+      @match = Fabricate(
+        :account,
+        display_name: "Display Name",
+        username: "username",
+        domain: "example.com"
+      )
+      _missing = Fabricate(
+        :account,
+        display_name: "Missing",
+        username: "missing",
+        domain: "missing.com"
+      )
+    end
+
+    it 'finds accounts with matching display_name' do
+      results = Account.search_for("display")
+      expect(results).to eq [@match]
+    end
+
+    it 'finds accounts with matching username' do
+      results = Account.search_for("username")
+      expect(results).to eq [@match]
+    end
+
+    it 'finds accounts with matching domain' do
+      results = Account.search_for("example")
+      expect(results).to eq [@match]
+    end
+
+    it 'ranks multiple matches higher' do
+      account = Fabricate(
+        :account,
+        username: "username",
+        display_name: "username"
+      )
+      results = Account.search_for("username")
+      expect(results).to eq [account, @match]
+    end
+  end
+
+  describe '.advanced_search_for' do
+    it 'ranks followed accounts higher' do
+      account = Fabricate(:account)
+      match = Fabricate(:account, username: "Matching")
+      followed_match = Fabricate(:account, username: "Matcher")
+      Fabricate(:follow, account: account, target_account: followed_match)
+
+      results = Account.advanced_search_for("match", account)
+      expect(results).to eq [followed_match, match]
+      expect(results.first.rank).to be > results.last.rank
+    end
+  end
+
+  describe '.triadic_closures' do
+    subject { described_class.triadic_closures(me) }
+
+    let!(:me) { Fabricate(:account) }
+    let!(:friend) { Fabricate(:account) }
+    let!(:friends_friend) { Fabricate(:account) }
+    let!(:both_follow) { Fabricate(:account) }
+
+    before do
+      me.follow!(friend)
+      friend.follow!(friends_friend)
+
+      me.follow!(both_follow)
+      friend.follow!(both_follow)
+    end
+
+    it 'finds accounts you dont follow which are followed by accounts you do follow' do
+      is_expected.to eq [friends_friend]
+    end
+
+    context 'when you block account' do
+      before do
+        me.block!(friends_friend)
+      end
+
+      it 'rejects blocked accounts' do
+        is_expected.to be_empty
+      end
+    end
+
+    context 'when you mute account' do
+      before do
+        me.mute!(friends_friend)
+      end
+
+      it 'rejects muted accounts' do
+        is_expected.to be_empty
+      end
+    end
   end
 
   describe '.find_local' do
@@ -208,6 +403,10 @@ RSpec.describe Account, type: :model do
     it 'does not match URLs' do
       expect(subject.match('Check this out https://medium.com/@alice/some-article#.abcdef123')).to be_nil
     end
+
+    xit 'does not match URL querystring' do
+      expect(subject.match('https://example.com/?x=@alice')).to be_nil
+    end
   end
 
   describe 'validations' do
@@ -254,6 +453,20 @@ RSpec.describe Account, type: :model do
       end
     end
 
+    describe 'by_domain_accounts' do
+      it 'returns accounts grouped by domain sorted by accounts' do
+        2.times { Fabricate(:account, domain: 'example.com') }
+        Fabricate(:account, domain: 'example2.com')
+
+        results = Account.by_domain_accounts
+        expect(results.length).to eq 2
+        expect(results.first.domain).to eq 'example.com'
+        expect(results.first.accounts_count).to eq 2
+        expect(results.last.domain).to eq 'example2.com'
+        expect(results.last.accounts_count).to eq 1
+      end
+    end
+
     describe 'local' do
       it 'returns an array of accounts who do not have a domain' do
         account_1 = Fabricate(:account, domain: nil)
@@ -275,6 +488,26 @@ RSpec.describe Account, type: :model do
         account_1 = Fabricate(:account, suspended: true)
         account_2 = Fabricate(:account, suspended: false)
         expect(Account.suspended).to match_array([account_1])
+      end
+    end
+  end
+
+  describe 'static avatars' do
+    describe 'when GIF' do
+      it 'creates a png static style' do
+        subject.avatar = attachment_fixture('avatar.gif')
+        subject.save
+
+        expect(subject.avatar_static_url).to_not eq subject.avatar_original_url
+      end
+    end
+
+    describe 'when non-GIF' do
+      it 'does not create extra static style' do
+        subject.avatar = attachment_fixture('attachment.jpg')
+        subject.save
+
+        expect(subject.avatar_static_url).to eq subject.avatar_original_url
       end
     end
   end
